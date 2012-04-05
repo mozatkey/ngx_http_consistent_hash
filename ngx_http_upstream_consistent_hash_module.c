@@ -7,6 +7,7 @@
 
 #define NR_BUCKETS          512
 #define NR_VIRTUAL_NODES   (1024 * 16)
+static ngx_uint_t MAX_PEER_FAILED = 3;
 
 
 typedef struct {
@@ -160,8 +161,8 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
 
             if (!(chp->tried[n] & m)) {
 
-                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
-                               "get consistent hash peer, rnode index: %ui", rnode->index);
+                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, pc->log, 0,
+                               "get consistent hash peer, rnode index: %ui, ip:%s port:%ui", rnode->index, inet_ntoa(((struct sockaddr_in*)rnode->sockaddr)->sin_addr), ntohs(((struct sockaddr_in*)rnode->sockaddr)->sin_port));
 
                 if (!rnode->down) {
 
@@ -175,11 +176,14 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
                     }
 
                     if (now - rnode->accessed > rnode->fail_timeout) {
+                        ngx_log_debug(NGX_LOG_DEBUG_HTTP, pc->log, 0, "get consistent hash peer, timeout");
                         rnode->fails = 0;
                         break;
                     }
 
                 } else {
+                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0, 
+                                   "get consistent hash peer, rnode index: %ui, rnode is down", rnode->index);
                     chp->tried[n] |= m;
                 }
 
@@ -220,6 +224,8 @@ ngx_http_upstream_free_consistent_hash_peer(ngx_peer_connection_t *pc, void *dat
 
     time_t                               now;
     ngx_http_upstream_chash_real_node_t *peer;
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
+                   "free consistent hash peer, pc->tries: %ui", pc->tries);
 
     if (state == 0 && pc->tries == 0) {
         return;
@@ -234,9 +240,10 @@ ngx_http_upstream_free_consistent_hash_peer(ngx_peer_connection_t *pc, void *dat
         now = ngx_time();
 
         peer = &chp->ring->r_nodes[chp->current];
-
-        peer->fails++;
-        peer->accessed = now;
+        if (pc->tries == MAX_PEER_FAILED){
+            peer->fails++;
+            peer->accessed = now;
+        }
     }
 
     if (pc->tries) {
@@ -291,7 +298,7 @@ ngx_http_upstream_init_consistent_hash_peer(ngx_http_request_t *r, ngx_http_upst
 
     r->upstream->peer.free = ngx_http_upstream_free_consistent_hash_peer;
     r->upstream->peer.get = ngx_http_upstream_get_consistent_hash_peer;
-    r->upstream->peer.tries = chp->ring->r_number;
+    r->upstream->peer.tries = MAX_PEER_FAILED;
 
     return NGX_OK;
 }
