@@ -181,12 +181,9 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
                         break;
                     }
 
-                } else {
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0, 
-                                   "get consistent hash peer, rnode index: %ui, rnode is down", rnode->index);
-                    chp->tried[n] |= m;
-                }
+                } 
 
+                chp->tried[n] |= m;
                 pc->tries--;
             }
 
@@ -211,6 +208,8 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
 
 failed:
 
+    //ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0, 
+    //              "get consistent hash peer, rnode index: %ui, rnode is down, failed", rnode->index);
     pc->name = ring->name;
 
     return NGX_BUSY;
