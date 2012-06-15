@@ -1,12 +1,13 @@
 
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
 
 
-#define NR_BUCKETS          512
+#define NR_BUCKETS          521
 #define NR_VIRTUAL_NODES   (1024 * 16)
-static ngx_uint_t MAX_PEER_FAILED = 3;
+#define MAX_PEER_FAILED     3
 
 
 typedef struct {
@@ -31,7 +32,9 @@ typedef struct ngx_http_upstream_chash_virtual_node_s  ngx_http_upstream_chash_v
 
 struct ngx_http_upstream_chash_virtual_node_s
 {
+    ngx_uint_t                               index;
     ngx_uint_t                               point;
+
     ngx_http_upstream_chash_real_node_t     *real;
     ngx_http_upstream_chash_virtual_node_t  *next;
 };
@@ -61,7 +64,14 @@ typedef struct {
     ngx_http_upstream_chash_ring_t          *ring;
 } ngx_http_upstream_chash_peer_data_t;
 
+typedef struct {
+    ngx_array_t *values;
+    ngx_array_t *lengths;
+    ngx_uint_t  scale;
+} ngx_http_upstream_consistent_hash_srv_conf_t;
 
+
+static void *ngx_http_upstream_consistent_hash_create_srv_conf(ngx_conf_t *cf);
 static ngx_int_t ngx_http_upstream_init_consistent_hash_peer(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *us);
 static ngx_int_t ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc,
@@ -69,9 +79,6 @@ static ngx_int_t ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_
 static char * ngx_http_upstream_consistent_hash(ngx_conf_t *cf, ngx_command_t *cmd,
     void *data);
 
-
-static ngx_array_t * ngx_http_upstream_consistent_hash_key_lengths;
-static ngx_array_t * ngx_http_upstream_consistent_hash_key_values;
 
 
 static ngx_command_t  ngx_http_upstream_consistent_hash_commands[] = { 
@@ -82,8 +89,15 @@ static ngx_command_t  ngx_http_upstream_consistent_hash_commands[] = {
       0,
       0,
       NULL },
-
-      ngx_null_command
+          
+    { ngx_string("consistent_hash_scale"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_upstream_consistent_hash_srv_conf_t, scale),
+      NULL},
+       
+    ngx_null_command
 };
 
 
@@ -94,8 +108,8 @@ static ngx_http_module_t  ngx_http_upstream_consistent_hash_module_ctx = {
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
 
-    NULL,                                  /* create server configuration */
-    NULL,                                  /* merge server configuration */
+    ngx_http_upstream_consistent_hash_create_srv_conf,      /* create server configuration */
+    NULL,                                                   /* merge server configuration */
 
     NULL,                                  /* create location configuration */
     NULL                                   /* merge location configuration */
@@ -117,6 +131,20 @@ ngx_module_t  ngx_http_upstream_consistent_hash_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static void *
+ngx_http_upstream_consistent_hash_create_srv_conf(ngx_conf_t *cf)
+{
+    ngx_http_upstream_consistent_hash_srv_conf_t *conf;
+
+    conf = ngx_pcalloc(cf->pool,
+                       sizeof(ngx_http_upstream_consistent_hash_srv_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    return conf;
+}
+
 
 static ngx_int_t
 ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data)
@@ -131,16 +159,22 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
     ngx_http_upstream_chash_real_node_t     *rnode;
     ngx_http_upstream_chash_virtual_node_t  *vnode;
 
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, pc->log, 0,
+                   "get consistent hash peer, v_number: %ui, r_number: %ui",
+                   ring->v_number, ring->r_number);
+
+    ngx_uint_t  i;
+
+    for (i=0; i<ring->v_number; i++) {
+        ngx_log_debug5(NGX_LOG_DEBUG_HTTP, pc->log, 0,
+                       "get consistent hash peer, %ui: vnode: %ui, point: %ui, rnode: %ui, name: %s",
+                       i, ring->v_nodes[i].index, ring->v_nodes[i].point,
+                       ring->v_nodes[i].real->index, ring->v_nodes[i].real->name.data);
+    }
+
+
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                    "get consistent hash peer, try: %ui", pc->tries);
-
-//    ngx_uint_t  i;
-//
-//    for (i=0; i<ring->v_number; i++) {
-//        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, pc->log, 0,
-//                       "get consistent hash peer, vnode: %ui, point: %ui, rnode: %ui",
-//                       i, ring->v_nodes[i].point, ring->v_nodes[i].real->index);
-//    }
 
     now = ngx_time();
 
@@ -159,9 +193,11 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
             m = (uintptr_t) 1 << rnode->index % (8 * sizeof(uintptr_t));
 
             if (!(chp->tried[n] & m)) {
-
                 ngx_log_debug3(NGX_LOG_DEBUG_HTTP, pc->log, 0,
-                               "get consistent hash peer, rnode index: %ui, ip:%s port:%ui", rnode->index, inet_ntoa(((struct sockaddr_in*)rnode->sockaddr)->sin_addr), ntohs(((struct sockaddr_in*)rnode->sockaddr)->sin_port));
+                               "get consistent hash peer, rnode index: %ui, ip:%s port:%ui",
+                               rnode->index,
+                               inet_ntoa(((struct sockaddr_in*)rnode->sockaddr)->sin_addr),
+                               ntohs(((struct sockaddr_in*)rnode->sockaddr)->sin_port));
 
                 if (!rnode->down) {
 
@@ -179,7 +215,6 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
                         rnode->fails = 0;
                         break;
                     }
-
                 } 
 
                 chp->tried[n] |= m;
@@ -207,8 +242,6 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
 
 failed:
 
-    //ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0, 
-    //              "get consistent hash peer, rnode index: %ui, rnode is down, failed", rnode->index);
     pc->name = ring->name;
 
     return NGX_BUSY;
@@ -222,6 +255,7 @@ ngx_http_upstream_free_consistent_hash_peer(ngx_peer_connection_t *pc, void *dat
 
     time_t                               now;
     ngx_http_upstream_chash_real_node_t *peer;
+
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                    "free consistent hash peer, pc->tries: %ui", pc->tries);
 
@@ -257,6 +291,9 @@ ngx_http_upstream_init_consistent_hash_peer(ngx_http_request_t *r, ngx_http_upst
 
     ngx_uint_t                            n;
     ngx_http_upstream_chash_peer_data_t  *chp;
+    ngx_http_upstream_consistent_hash_srv_conf_t *uchscf;
+
+    uchscf = ngx_http_conf_upstream_srv_conf(us, ngx_http_upstream_consistent_hash_module);
 
     chp = r->upstream->peer.data;
 
@@ -285,8 +322,8 @@ ngx_http_upstream_init_consistent_hash_peer(ngx_http_request_t *r, ngx_http_upst
         }
     }
 
-    if (ngx_http_script_run(r, &evaluated_key_to_hash, ngx_http_upstream_consistent_hash_key_lengths->elts, 0,
-                                ngx_http_upstream_consistent_hash_key_values->elts)
+    if (ngx_http_script_run(r, &evaluated_key_to_hash, uchscf->lengths->elts, 0,
+                                uchscf->values->elts)
         == NULL)
     {
         return NGX_ERROR;
@@ -296,7 +333,11 @@ ngx_http_upstream_init_consistent_hash_peer(ngx_http_request_t *r, ngx_http_upst
 
     r->upstream->peer.free = ngx_http_upstream_free_consistent_hash_peer;
     r->upstream->peer.get = ngx_http_upstream_get_consistent_hash_peer;
-    r->upstream->peer.tries = MAX_PEER_FAILED;
+
+    if (chp->ring->r_number < MAX_PEER_FAILED)
+        r->upstream->peer.tries = chp->ring->r_number;
+    else
+        r->upstream->peer.tries = MAX_PEER_FAILED;
 
     return NGX_OK;
 }
@@ -356,6 +397,9 @@ ngx_http_upstream_init_consistent_hash(ngx_conf_t *cf, ngx_http_upstream_srv_con
     ngx_http_upstream_server_t      *server;
     ngx_http_upstream_chash_ring_t  *ring;
 
+    ngx_http_upstream_consistent_hash_srv_conf_t *uchscf;
+    uchscf = ngx_http_conf_upstream_srv_conf(us,ngx_http_upstream_consistent_hash_module);
+
     us->peer.init = ngx_http_upstream_init_consistent_hash_peer;
 
     if (!us->servers) {
@@ -378,15 +422,8 @@ ngx_http_upstream_init_consistent_hash(ngx_conf_t *cf, ngx_http_upstream_srv_con
         total_weights += server[i].weight * server[i].naddrs;
     }
 
-    scale = NR_VIRTUAL_NODES / total_weights;
-
-    for (i=0; i<us->servers->nelts; i++) {
-        if (server[i].backup) {
-            continue;
-        }
-
-        v_number += server[i].weight * server[i].naddrs * scale;
-    }
+    scale    =  uchscf->scale;
+    v_number =  scale * total_weights;
 
     ring = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_chash_ring_t));
     if (ring == NULL) {
@@ -432,8 +469,9 @@ ngx_http_upstream_init_consistent_hash(ngx_conf_t *cf, ngx_http_upstream_srv_con
             ring->r_nodes[r].index = r;
 
             for (k = 0; k < server[i].weight*scale; k++) {
-                snprintf((char *)hash_data, sizeof("255.255.255.255:65535-65535"), "%s-%i", server[i].addrs[j].name.data, (int)k);
+                ngx_snprintf(hash_data, sizeof("255.255.255.255:65535-65535"), "%V-%ui", &server[i].addrs[j].name, k);
 
+                ring->v_nodes[v].index = v;
                 ring->v_nodes[v].real  = &ring->r_nodes[r];
                 ring->v_nodes[v].point = ngx_crc32_long(hash_data, strlen((char *)hash_data));
 
@@ -466,17 +504,17 @@ ngx_http_upstream_consistent_hash(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     ngx_str_t                       *value;
     ngx_http_script_compile_t        sc;
     ngx_http_upstream_srv_conf_t    *uscf;
+    ngx_http_upstream_consistent_hash_srv_conf_t *uchscf;
 
     ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
-    
-    value = cf->args->elts;
-    ngx_http_upstream_consistent_hash_key_lengths = NULL;
-    ngx_http_upstream_consistent_hash_key_values = NULL;
+    value = cf->args->elts; 
 
+    uscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
+    uchscf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_consistent_hash_module);
     sc.cf = cf;
     sc.source = &value[1];
-    sc.lengths = &ngx_http_upstream_consistent_hash_key_lengths;
-    sc.values = &ngx_http_upstream_consistent_hash_key_values;
+    sc.lengths = &uchscf->lengths;
+    sc.values  = &uchscf->values;
     sc.complete_lengths = 1;
     sc.complete_values = 1;
 
@@ -484,7 +522,6 @@ ngx_http_upstream_consistent_hash(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
         return NGX_CONF_ERROR;
     }
 
-    uscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
 
     uscf->peer.init_upstream = ngx_http_upstream_init_consistent_hash;
 
