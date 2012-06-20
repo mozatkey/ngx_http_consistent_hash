@@ -1,5 +1,4 @@
 
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -511,7 +510,6 @@ ngx_http_upstream_hash_scale(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_upstream_srv_conf_t  *uscf;
     ngx_http_upstream_consistent_hash_srv_conf_t *uchscf;    
-    char  *p = conf;
     ngx_str_t *value;
     ngx_int_t  tmp;    
     uscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
