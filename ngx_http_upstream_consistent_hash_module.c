@@ -5,7 +5,8 @@
 #include <ngx_http.h>
 
 
-#define NR_BUCKETS          521
+#define NR_BUCKETS          1039
+#define NR_SCALE            1024
 #define MAX_PEER_FAILED     3
 
 
@@ -141,11 +142,11 @@ ngx_http_upstream_consistent_hash_create_srv_conf(ngx_conf_t *cf)
     if (conf == NULL) {
         return NULL;
     }
-    conf->scale     =  512;//the defalt of scale
+    conf->scale     =  NR_SCALE;/*the defalt of scale*/
     /*
      * set by ngx_pcalloc():
      *
-     * conf->scale   = 512;
+     * conf->scale   = NR_SCALE;
      * conf->lengths = NULL;
      * conf->values  = NULL;
      */
@@ -511,7 +512,6 @@ ngx_http_upstream_hash_scale(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_upstream_srv_conf_t  *uscf;
     ngx_http_upstream_consistent_hash_srv_conf_t *uchscf;    
-    char  *p = conf;
     ngx_str_t *value;
     ngx_int_t  tmp;    
     uscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
@@ -564,3 +564,4 @@ ngx_http_upstream_consistent_hash(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
 
     return NGX_CONF_OK;
 }
+
