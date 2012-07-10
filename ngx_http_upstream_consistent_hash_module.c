@@ -1,5 +1,4 @@
 
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -50,7 +49,7 @@ typedef struct
     ngx_http_upstream_chash_real_node_t     *r_nodes;
     ngx_http_upstream_chash_virtual_node_t  *v_nodes;
 
-    ngx_http_upstream_chash_virtual_node_t  *buckets[NR_BUCKETS];
+    ngx_uint_t                              buckets[NR_BUCKETS];
 } ngx_http_upstream_chash_ring_t;
 
 
@@ -80,6 +79,8 @@ static ngx_int_t ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_
     void *data);
 static char * ngx_http_upstream_consistent_hash(ngx_conf_t *cf, ngx_command_t *cmd,
     void *data);
+static ngx_uint_t ngx_http_upstream_consistent_hash_find(ngx_http_upstream_chash_ring_t *ring, 
+    ngx_uint_t point, ngx_uint_t low, ngx_uint_t high);
 
 
 
@@ -162,7 +163,7 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
 
     time_t                               now;
     uintptr_t                            m;
-    ngx_uint_t                           n;
+    ngx_uint_t                           pos, n;
 
     ngx_http_upstream_chash_real_node_t     *rnode;
     ngx_http_upstream_chash_virtual_node_t  *vnode;
@@ -193,7 +194,14 @@ ngx_http_upstream_get_consistent_hash_peer(ngx_peer_connection_t *pc, void *data
         rnode = &ring->r_nodes[0];
 
     } else {
-        vnode = ring->buckets[chp->point % NR_BUCKETS];
+        pos = (uint64_t)chp->point * NR_BUCKETS/0xFFFFFFFF;
+        if(pos+1 == NR_BUCKETS){
+            pos = ngx_http_upstream_consistent_hash_find(ring, chp->point, ring->buckets[pos], ring->v_number - 1);
+        }else{
+            pos = ngx_http_upstream_consistent_hash_find(ring, chp->point, ring->buckets[pos], ring->buckets[pos+1]);
+        }
+        pos = (uint64_t)chp->point * NR_BUCKETS/0xFFFFFFFF;
+        vnode = &ring->v_nodes[pos];
         rnode = vnode->real;
 
         for (;;) {
@@ -363,14 +371,14 @@ ngx_http_upstream_consistent_hash_compare_virtual_nodes(const void *one, const v
 }
 
 
-static ngx_http_upstream_chash_virtual_node_t *
-ngx_http_upstream_consistent_hash_find(ngx_http_upstream_chash_ring_t *ring, ngx_uint_t point)
+static ngx_uint_t
+ngx_http_upstream_consistent_hash_find(ngx_http_upstream_chash_ring_t *ring, ngx_uint_t point, ngx_uint_t low, ngx_uint_t high)
 {
-    ngx_uint_t mid = 0, low = 0, high = ring->v_number - 1;
+    ngx_uint_t mid = 0;
 
     while (1) {
         if (point <= ring->v_nodes[low].point || point > ring->v_nodes[high].point) {
-            return &ring->v_nodes[low];
+            return low;
         }
 
         /* test middle point */
@@ -378,7 +386,7 @@ ngx_http_upstream_consistent_hash_find(ngx_http_upstream_chash_ring_t *ring, ngx
 
         /* perfect match */
         if (point <= ring->v_nodes[mid].point && point > (mid ? ring->v_nodes[mid-1].point : 0)) {
-            return &ring->v_nodes[mid];
+            return mid;
         }
 
         /* too low, go up */
@@ -499,7 +507,7 @@ ngx_http_upstream_init_consistent_hash(ngx_conf_t *cf, ngx_http_upstream_srv_con
     }
 
     for (i=0; i<NR_BUCKETS; i++)
-        ring->buckets[i] = ngx_http_upstream_consistent_hash_find(ring, i*step);
+        ring->buckets[i] = ngx_http_upstream_consistent_hash_find(ring, i*step, 0, ring->v_number - 1);
 
     us->peer.data = ring;
 
